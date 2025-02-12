@@ -2,34 +2,73 @@
 
 library(tidyverse)
 library(janitor)
+library(sparklyr)
+library(dplyr)
+library(dbplyr)
+
+# Connect to databricks ----
+library(sconn)
+sc <- sc()
 
 # Read in key measures data ----
+
+#key_measures <-
+#  read_csv("CSDS_Cluster_analysis___key_measures.csv") |>
+#  clean_names() |>
+#  mutate(
+#    team_input_count = as.numeric(team_input_count),
+#    intermittent_care_periods = as.numeric(intermittent_care_periods),
+#    avg_contact_duration = as.numeric(avg_contact_duration),
+#    acute_admissions_2223 = as.numeric(acute_admissions_2223)
+#  )
+
 key_measures <-
-  read_csv("CSDS_Cluster_analysis___key_measures.csv") |>
+  dplyr::tbl(
+    sc,
+    dbplyr::in_catalog("strategyunit", "csds_al", "combined_key_measures")
+    ) |>
+  #collect() |>
   clean_names() |>
   mutate(
     team_input_count = as.numeric(team_input_count),
     intermittent_care_periods = as.numeric(intermittent_care_periods),
     avg_contact_duration = as.numeric(avg_contact_duration),
     acute_admissions_2223 = as.numeric(acute_admissions_2223)
-  )
+    )
 
 
 # Remove date fields and replace NA's where appropriate
+
+#key_measures_reduced <-
+#  key_measures |>
+#  select(-c(first_contact, last_contact, care_mid_date)) |>
+#  mutate(
+#    intermittent_care_periods = replace_na(intermittent_care_periods, 0),
+#    acute_admissions_2223 = replace_na(acute_admissions_2223, 0)
+#    ) |> #2,120,821
+#  anti_join(
+#    key_measures |>
+#      group_by(person_id) |>
+#      mutate(rn = row_number()) |> # remove any duplicate person_id rows - just in case
+#      filter(rn > 1),
+#    by = "person_id"
+#    ) # 2,120,817
+
+
 key_measures_reduced <-
   key_measures |>
   select(-c(first_contact, last_contact, care_mid_date)) |>
   mutate(
-    intermittent_care_periods = replace_na(intermittent_care_periods, 0),
-    acute_admissions_2223 = replace_na(acute_admissions_2223, 0)
-    ) |> #2,120,821
+    intermittent_care_periods = ifelse(is.na(intermittent_care_periods), 0, intermittent_care_periods),
+    acute_admissions_2223 = ifelse(is.na(acute_admissions_2223), 0, acute_admissions_2223)
+  ) |>
   anti_join(
     key_measures |>
       group_by(person_id) |>
-      mutate(rn = row_number()) |> # remove any duplicate person_id rows - just in case
-      filter(rn > 1),
+      summarise(n = n()) |>
+      filter(n > 1),
     by = "person_id"
-    ) # 2,120,817
+  )
 
 
 # Clean names for graphs
@@ -123,6 +162,63 @@ key_measures_reduced_imp <-
     team_input_count = impute_team_input_count(team_input_count, prob_distribution_team, overall_prob_distribution_team, org_id_provider),
     avg_contact_duration = impute_avg_contact_duration(avg_contact_duration, prob_distribution_duration)
   )
+
+---------------------------
+
+
+
+impute_avg_contact_duration <- function(series, distribution_df) {
+    na_indices <- which(is.na(series))
+    sampled_values <- sample(distribution_df$field, size = length(na_indices), replace = TRUE, prob = distribution_df$probability)
+    series[na_indices] <- sampled_values
+    return(series)
+  }
+
+impute_team_input_count <- function(series, distribution_df, overall_distribution_df, org_id_provider) {
+  na_indices <- which(is.na(series))
+  sampled_values <- vector("numeric", length(na_indices))
+
+  for (i in seq_along(na_indices)) {
+    org_id <- org_id_provider[na_indices[i]]
+    subset_df <- distribution_df[distribution_df$org_id_provider == org_id, ]
+
+    sampled_values[i] <- if (nrow(subset_df) > 1) {
+      sample(subset_df$field, size = 1, replace = TRUE, prob = subset_df$probability)
+    } else if (nrow(subset_df) == 1) {
+      subset_df$field
+    } else {
+      sample(overall_distribution_df$field, size = 1, replace = TRUE, prob = overall_distribution_df$probability)
+    }
+  }
+
+  series[na_indices] <- sampled_values
+  return(series)
+}
+
+key_measures_reduced_imp <- key_measures_reduced %>%
+  spark_apply(
+    function(df) {
+      df$team_input_count <- impute_team_input_count(df$team_input_count, prob_distribution_team, overall_prob_distribution_team, df$org_id_provider)
+      df$avg_contact_duration <- impute_avg_contact_duration(df$avg_contact_duration, prob_distribution_duration)
+      df
+    },
+    columns = colnames(key_measures_reduced)
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Check:
 sum(is.na(key_measures_reduced_imp))
@@ -271,3 +367,9 @@ screeplot(pca_result, type = "lines")
 print(pca_result$rotation)
 
 biplot(pca_result)
+
+
+
+# Disconnect spark connection! ----
+sc_disconnect()
+
