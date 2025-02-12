@@ -1,11 +1,15 @@
-# Perfom cluster analysis
+# Perform cluster analysis
 
 library(tidyverse)
 library(GGally)
 library(factoextra)
 library(plotly)
+library(tidyLPA)
+library(mclust)
+library(cluster)
+library(clusterSim) # For Davies-Bouldin index
 
-# Step 1: Selecting the Appropriate Cluster Analysis Method ----
+# Approach: ----
 
 1. **Determine the Number of Clusters**:
    - Use the **Elbow Method**: Plot the total within-cluster sum of squares against the number of clusters and look for an "elbow" point.
@@ -18,7 +22,7 @@ library(plotly)
    - **Hierarchical Clustering**: Useful for smaller datasets and when you want a dendrogram to visualize the clustering process.
    - **Model-Based Clustering**: Assumes data is generated from a mixture of distributions and can handle more complex cluster shapes.
 
-# Step 2: Data Transformation and Normalization ----
+# Data Transformation and Normalization ----
 
 key_measures_scaled <-
   read_csv("key_measures_scaled.csv") |>
@@ -50,7 +54,7 @@ key_measure_lookup <-
   )
 
 
-# Step 3: Performing K-means Clustering in R ----
+# Step 1: Performing K-means Clustering in R ----
 
 ## 1. **Determine the Optimal Number of Clusters**:
 fviz_nbclust(key_measures_scaled_head, kmeans, method = "wss")  # Elbow Method
@@ -62,7 +66,7 @@ set.seed(123)  # For reproducibility
 kmeans_result_4 <-  kmeans(key_measures_scaled_head, centers = 4, nstart = 100, iter.max = 100)   # Assuming 4 clusters
 kmeans_result_5 <-  kmeans(key_measures_scaled_head, centers = 5, nstart = 100, iter.max = 100)   # Assuming 5 clusters
 kmeans_result_6 <-  kmeans(key_measures_scaled_head, centers = 6, nstart = 100, iter.max = 100)   # Assuming 6 clusters
-kmeans_result_7 <-  kmeans(key_measures_scaled_head, centers = 7, nstart = 100, iter.max = 100)   # Assuming 7 clusters
+kmeans_result_7 <-  kmeans(key_measures_scaled_head, centers = 7, nstart = 100, iter.max = 1000)   # Assuming 7 clusters
 kmeans_result_8 <-  kmeans(key_measures_scaled_head, centers = 8, nstart = 100, iter.max = 100)   # Assuming 8 clusters
 kmeans_result_9 <-  kmeans(key_measures_scaled_head, centers = 9, nstart = 100, iter.max = 100)   # Assuming 9 clusters
 kmeans_result_10 <- kmeans(key_measures_scaled_head, centers = 10, nstart = 100, iter.max = 100)  # Assuming 10 clusters
@@ -182,9 +186,8 @@ kmeans_classification_means |>
        subtitle = "K-means cluster analysis - 7 clusters")
 
 
-# Step 4: Performing Model-Based Clustering ----
-library(tidyLPA)
-library(mclust)
+# Step 2: Performing Model-Based Clustering ----
+
 #library(forcats)
 
 
@@ -247,7 +250,8 @@ explore_model_fit <- function(df,
   y
 }
 
-fit_output <- explore_model_fit(key_measures_scaled_head, n_profiles_range = 1:12)
+fit_output      <- explore_model_fit(key_measures_scaled_head, n_profiles_range = 1:12)
+#fit_output_full <- explore_model_fit(key_measures_scaled,      n_profiles_range = 1:12)
 
 # Elbow plot
 to_plot <-
@@ -330,7 +334,94 @@ proc_df |>
 # LPA goodness of fit
 lpa_bic <- lpa_model$bic
 
-# Step 5: Evaluating and Comparing Clustering Results ----
+# Step 3: Perform Density-Based Clustering ----
+
+# https://www.sthda.com/english/wiki/wiki.php?id_contents=7940
+
+library(fpc)
+library(dbscan)
+
+
+# Optimal value of “eps” parameter
+dbscan::kNNdistplot(key_measures_scaled_head, k =  5)
+abline(h = 2.4, lty = 2)
+
+# Compute DBSCAN using fpc package
+set.seed(123)
+db <- fpc::dbscan(key_measures_scaled_head, eps = 2.4, MinPts = 5)
+
+# Plot DBSCAN results
+plot(db, key_measures_scaled_head, main = "DBSCAN", frame = FALSE)
+
+fviz_cluster(db, key_measures_scaled_head, stand = FALSE, frame = FALSE, geom = "point")
+
+# Print DBSCAN
+print(db)
+
+
+# Step x... : Evaluating and Comparing Clustering Results ----
+
+# Assuming you have your data in a dataframe called 'data'
+
+# K-means clustering
+kmeans_clusters <- kmeans_result_7$cluster
+
+# LPA clustering (using Mclust for Gaussian Mixture Models)
+lpa_clusters <- selected_model_eev_6$classification
+
+# DBSCAN clustering
+dbscan_clusters <- db$cluster
+
+# Evaluate clustering performance
+evaluate_clustering <- function(data, clusters) {
+  silhouette_score <- mean(silhouette(clusters, dist(data))[, 3])
+  db_index <- clusterSim::davies.bouldin(data, clusters)
+  wcss <- sum(kmeans(data, centers = length(unique(clusters)))$withinss)
+  return(list(silhouette_score = silhouette_score, db_index = db_index, wcss = wcss))
+}
+
+
+# Evaluate clustering performance
+evaluate_clustering <- function(data, clusters) {
+  # Ensure clusters are numeric
+  clusters <- as.numeric(clusters)
+
+  silhouette_score <- mean(silhouette(clusters, dist(data))[, 3])
+  db_index <- index.DB(data, clusters)$DB # Using clusterSim package for Davies-Bouldin index
+  wcss <- sum(kmeans(data, centers = length(unique(clusters)))$withinss)
+
+  return(list(silhouette_score = silhouette_score, db_index = db_index, wcss = wcss))
+}
+
+
+# Calculate evaluation metrics for each model
+kmeans_eval <- evaluate_clustering(key_measures_scaled_head, kmeans_clusters)
+lpa_eval    <- evaluate_clustering(key_measures_scaled_head, lpa_clusters)
+dbscan_eval <- evaluate_clustering(key_measures_scaled_head, dbscan_clusters)
+
+
+# Print evaluation metrics
+print("K-means Evaluation:")
+print(kmeans_eval)
+
+print("LPA Evaluation:")
+print(lpa_eval)
+
+print("DBSCAN Evaluation:")
+print(dbscan_eval)
+
+# Select the best model based on silhouette score (higher is better)
+best_model <- ifelse(kmeans_eval$silhouette_score >
+                       lpa_eval$silhouette_score & kmeans_eval$silhouette_score >
+                       dbscan_eval$silhouette_score, "K-means",
+                     ifelse(lpa_eval$silhouette_score >
+                              dbscan_eval$silhouette_score, "LPA", "DBSCAN"))
+
+print(paste("The best model is:", best_model))
+
+
+
+
 
 ## 1. **Compare Clustering Solutions**:
 ### Use **Adjusted Rand Index (ARI)** to compare different clustering solutions.
