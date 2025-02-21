@@ -52,5 +52,11 @@ rsconnect/
 # csv files
 *.csv
 
+# Word docs
+*.docx
+
+# RData files
+*.RData
+
 # Specific Raw data
 

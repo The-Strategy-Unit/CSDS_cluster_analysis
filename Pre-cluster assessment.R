@@ -5,59 +5,27 @@ library(janitor)
 library(sparklyr)
 library(dplyr)
 library(dbplyr)
+library(DBI)
+library(sconn)
 
 # Connect to databricks ----
-library(sconn)
 sc <- sc()
 
 # Read in key measures data ----
 
-#key_measures <-
-#  read_csv("CSDS_Cluster_analysis___key_measures.csv") |>
-#  clean_names() |>
-#  mutate(
-#    team_input_count = as.numeric(team_input_count),
-#    intermittent_care_periods = as.numeric(intermittent_care_periods),
-#    avg_contact_duration = as.numeric(avg_contact_duration),
-#    acute_admissions_2223 = as.numeric(acute_admissions_2223)
-#  )
-
+# representative sample
 key_measures <-
-  dplyr::tbl(
-    sc,
-    dbplyr::in_catalog("strategyunit", "csds_al", "combined_key_measures")
-    ) |>
-  #collect() |>
-  clean_names() |>
-  mutate(
-    team_input_count = as.numeric(team_input_count),
-    intermittent_care_periods = as.numeric(intermittent_care_periods),
-    avg_contact_duration = as.numeric(avg_contact_duration),
-    acute_admissions_2223 = as.numeric(acute_admissions_2223)
-    )
+  read_csv("key_measures_rep_sub_sample.csv") |>
+  pivot_longer(-person_id) |>
+  mutate(value = as.numeric(value)) |>
+  pivot_wider(id_cols = person_id)
+
 
 
 # Remove date fields and replace NA's where appropriate
 
-#key_measures_reduced <-
-#  key_measures |>
-#  select(-c(first_contact, last_contact, care_mid_date)) |>
-#  mutate(
-#    intermittent_care_periods = replace_na(intermittent_care_periods, 0),
-#    acute_admissions_2223 = replace_na(acute_admissions_2223, 0)
-#    ) |> #2,120,821
-#  anti_join(
-#    key_measures |>
-#      group_by(person_id) |>
-#      mutate(rn = row_number()) |> # remove any duplicate person_id rows - just in case
-#      filter(rn > 1),
-#    by = "person_id"
-#    ) # 2,120,817
-
-
 key_measures_reduced <-
   key_measures |>
-  select(-c(first_contact, last_contact, care_mid_date)) |>
   mutate(
     intermittent_care_periods = ifelse(is.na(intermittent_care_periods), 0, intermittent_care_periods),
     acute_admissions_2223 = ifelse(is.na(acute_admissions_2223), 0, acute_admissions_2223)
@@ -163,77 +131,26 @@ key_measures_reduced_imp <-
     avg_contact_duration = impute_avg_contact_duration(avg_contact_duration, prob_distribution_duration)
   )
 
----------------------------
-
-
-
-impute_avg_contact_duration <- function(series, distribution_df) {
-    na_indices <- which(is.na(series))
-    sampled_values <- sample(distribution_df$field, size = length(na_indices), replace = TRUE, prob = distribution_df$probability)
-    series[na_indices] <- sampled_values
-    return(series)
-  }
-
-impute_team_input_count <- function(series, distribution_df, overall_distribution_df, org_id_provider) {
-  na_indices <- which(is.na(series))
-  sampled_values <- vector("numeric", length(na_indices))
-
-  for (i in seq_along(na_indices)) {
-    org_id <- org_id_provider[na_indices[i]]
-    subset_df <- distribution_df[distribution_df$org_id_provider == org_id, ]
-
-    sampled_values[i] <- if (nrow(subset_df) > 1) {
-      sample(subset_df$field, size = 1, replace = TRUE, prob = subset_df$probability)
-    } else if (nrow(subset_df) == 1) {
-      subset_df$field
-    } else {
-      sample(overall_distribution_df$field, size = 1, replace = TRUE, prob = overall_distribution_df$probability)
-    }
-  }
-
-  series[na_indices] <- sampled_values
-  return(series)
-}
-
-key_measures_reduced_imp <- key_measures_reduced %>%
-  spark_apply(
-    function(df) {
-      df$team_input_count <- impute_team_input_count(df$team_input_count, prob_distribution_team, overall_prob_distribution_team, df$org_id_provider)
-      df$avg_contact_duration <- impute_avg_contact_duration(df$avg_contact_duration, prob_distribution_duration)
-      df
-    },
-    columns = colnames(key_measures_reduced)
-  )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Check:
 sum(is.na(key_measures_reduced_imp))
 
-write_csv(key_measures_reduced_imp, "key_measures_reduced_imp.csv")
+#write_csv(key_measures_reduced_imp, "key_measures_reduced_imp.csv")
+
 
 #2. Examine Data Distribution ----
 ## Understand the distribution of each variable. Skewed distributions might need transformation.
+
+### Read in from files if wanting to skip above spark connect stuff
+key_measures_reduced_imp <- read_csv("key_measures_reduced_imp.csv")
+
 summary(key_measures_reduced_imp)
 
 skimr::skim(key_measures_reduced_imp)
 
 
 key_measures_reduced_imp |>
-  select(-org_id_provider) |>
+#key_measures_reduced |>
+  #select(-org_id_provider) |>
   pivot_longer(cols = -person_id) |>
   left_join(key_measure_lookup, by = c("name" = "variable")) |>
 
@@ -255,7 +172,8 @@ key_measures_reduced_imp |>
 
 remove_outliers <-
   key_measures_reduced_imp |>
-  select(-org_id_provider) |>
+  #key_measures_reduced |>
+  #select(-org_id_provider) |>
   pivot_longer(cols = -person_id) |>
   group_by(name) |>
   mutate(quantile_99 = quantile(value, 0.99)) |>
@@ -267,8 +185,14 @@ remove_outliers <-
 
 key_measures_reduced_imp_ex_outlier <-
   key_measures_reduced_imp |>
-  select(-org_id_provider) |>
+  #select(-org_id_provider) |>
   anti_join(remove_outliers, by = "person_id")
+
+# write for cluster analysis
+write.csv(
+  key_measures_reduced_imp_ex_outlier,
+  "key_measures_sample_cluster.csv"
+)
 
 
 key_measures_reduced_imp_ex_outlier |>
@@ -324,15 +248,23 @@ corrplot::corrplot(
 ## Standardize variables to have a mean of 0 and a standard deviation of 1, especially if they are on different scales.
 key_measures_scaled <- scale(key_measures_reduced_imp_ex_outlier[, -1])  # Exclude person_id
 
-write_csv(
+key_measures_scaled_long <-
   key_measures_reduced_imp_ex_outlier |>
   pivot_longer(-person_id) |>
   group_by(name) |>
   mutate(value_scale = scale(value)) |>
   select(person_id, name, value_scale) |>
-  mutate(value_scale = as.numeric(value_scale)),
-  "key_measures_scaled.csv"
-  )
+  mutate(value_scale = as.numeric(value_scale))
+
+key_measures_scaled_wide <-
+  key_measures_scaled_long |>
+  pivot_wider(id_cols = person_id,
+              names_from = name,
+              values_from = value_scale)
+
+
+write_csv(key_measures_scaled_long, "key_measures_scaled.csv")
+write_csv(key_measures_scaled_wide, "key_measures_scaled_wide.csv")
 
 key_measures_reduced_imp_ex_outlier |>
   pivot_longer(-person_id) |>
@@ -359,7 +291,7 @@ vif_results <- car::vif(lm(care_contacts ~ ., data = key_measures_reduced_imp_ex
 
 #7. Dimensionality Reduction ----
 ## Consider using PCA (Principal Component Analysis) to reduce dimensionality if you have many variables.
-pca_result <- prcomp(key_measures_scaled, center = TRUE, scale. = TRUE)
+pca_result <- prcomp(key_measures_reduced_imp_ex_outlier |> select(-person_id), center = TRUE, scale. = TRUE)
 summary(pca_result)
 
 screeplot(pca_result, type = "lines")
@@ -370,6 +302,19 @@ biplot(pca_result)
 
 
 
-# Disconnect spark connection! ----
+# Save the data table to Databricks & disconnect ----
+
+# Write imputed data to databricks
+dbGetQuery(sc, "USE strategyunit.csds_al") # Set the schema context
+spark_key_measures_reduced_imp <- copy_to(sc, key_measures_reduced_imp, "key_measures_reduced_imp", overwrite = TRUE) # Copy the data frame to Spark
+spark_write_table(spark_key_measures_reduced_imp, "strategyunit.csds_al.key_measures_reduced_imp")
+
+# Write scaled long data to databricks
+dbGetQuery(sc, "USE strategyunit.csds_al")
+spark_key_measures_scaled_wide <- copy_to(sc, key_measures_scaled_wide, "key_measures_scaled_wide", overwrite = TRUE)
+spark_write_table(spark_key_measures_scaled_wide, "strategyunit.csds_al.key_measures_scaled_wide")
+
+
+# Disconnect
 sc_disconnect()
 

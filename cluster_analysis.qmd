@@ -37,17 +37,101 @@ library(plotly)
 library(tidyLPA)
 library(mclust)
 
-key_measures_scaled <-
-  read_csv("key_measures_scaled.csv") |>
-  #data.table::as.data.table()
-  pivot_wider(id_cols = person_id,
-              names_from = name,
-              values_from = value_scale)
 
-key_measures_scaled_head <-
-  key_measures_scaled |>
-  head(10000) |>
-  select(-person_id)
+# Load the data and saved objects ----
+
+key_measures_rep_sub_sample <-
+  read_csv("key_measures_rep_sub_sample.csv") |>
+  select(-person_id) |>
+  as.data.frame()
+
+load("cluster_analysis.RData")
+
+load("cluster_analysis_evaluations.RData")
+
+# Functions ----
+
+## kmeans 
+wssplot <- function(data, nc = 10, seed = 1234, max_iter = 100) {
+  wss <- numeric(nc)
+  wss[1] <- (nrow(data) - 1) * sum(apply(data, 2, var))
+  set.seed(seed)
+  for (i in 2:nc) {
+    wss[i] <- sum(kmeans(data, centers = i, nstart = 25, iter.max = max_iter)$withinss)
+  }
+  plot(1:nc, wss, type = 'b', xlab = 'Number of Clusters', ylab = 'Within Group Sum of Squares',
+       main = 'Elbow Method Plot to Find Optimal Number of Clusters', frame.plot = TRUE,
+       col = 'blue', lwd = 1.5)
+}
+
+link_model_output <- function(model, model_id) {
+
+  model$tot.withinss |>
+    tibble() |>
+    rename(tot.withinss = 1) |>
+    mutate(id = model_id)
+}
+
+## LPA
+
+## Evaluation
+
+# Function to subsample data
+subsample_data <- function(data, fraction = 0.25) {
+  set.seed(123) # For reproducibility
+  sample_indices <- sample(1:nrow(data), size = floor(fraction * nrow(data)))
+  return(data[sample_indices, ])
+}
+
+# Evaluate clustering performance on a subsample
+evaluate_clustering_subsample <- function(data, clusters, fraction = 0.25) {
+  # Subsample the data
+  subsample <- subsample_data(data, fraction)
+  subsample_clusters <- clusters[1:nrow(subsample)]
+
+  # Ensure clusters are numeric
+  subsample_clusters <- as.numeric(subsample_clusters)
+
+  # Calculate silhouette score
+  dist_matrix <- dist(subsample)
+  sil <- silhouette(subsample_clusters, dist_matrix)
+  silhouette_score <- mean(sil[, 3])
+
+  # Calculate Davies-Bouldin index
+  db_index <- index.DB(subsample, subsample_clusters)$DB
+
+  # Calculate within-cluster sum of squares (WCSS)
+  wcss <- sum(kmeans(subsample, centers = length(unique(subsample_clusters)))$withinss)
+
+  return(list(silhouette_score = silhouette_score, db_index = db_index, wcss = wcss))
+}
+
+# Function to identify the optimum model
+select_optimum_model <- function(kmeans_eval, lpa_eval, dbscan_eval) {
+  # Combine evaluation metrics into a data frame
+  eval_metrics <- data.frame(
+    model = c("K-means", "LPA", "DBSCAN"),
+    silhouette_score = c(kmeans_eval$silhouette_score, lpa_eval$silhouette_score, dbscan_eval$silhouette_score),
+    db_index = c(kmeans_eval$db_index, lpa_eval$db_index, dbscan_eval$db_index),
+    wcss = c(kmeans_eval$wcss, lpa_eval$wcss, dbscan_eval$wcss)
+  )
+
+  # Normalize the metrics for comparison (higher silhouette score is better, lower DB index and WCSS are better)
+  eval_metrics$normalized_silhouette <- eval_metrics$silhouette_score / max(eval_metrics$silhouette_score)
+  eval_metrics$normalized_db_index <- min(eval_metrics$db_index) / eval_metrics$db_index
+  eval_metrics$normalized_wcss <- min(eval_metrics$wcss) / eval_metrics$wcss
+
+  # Calculate a combined score (you can adjust the weights as needed)
+  eval_metrics$combined_score <- eval_metrics$normalized_silhouette + eval_metrics$normalized_db_index + eval_metrics$normalized_wcss
+
+  # Identify the model with the highest combined score
+  optimum_model <- eval_metrics[which.max(eval_metrics$combined_score), "model"]
+
+  return(optimum_model)
+}
+
+
+# Look ups ----
 
 key_measure_lookup <-
   tribble(
@@ -72,48 +156,49 @@ key_measure_lookup <-
 
 ## Step 1: Performing K-means Clustering
 
+###  Create K-means Clustering models:
+```{r}
+#| echo: TRUE
+#| eval: FALSE
+
+set.seed(123)  # For reproducibility
+kmeans_result_4 <-  kmeans(key_measures_rep_sub_sample, centers = 4, nstart = 100, iter.max = 100) 
+kmeans_result_5 <-  kmeans(key_measures_rep_sub_sample, centers = 5, nstart = 100, iter.max = 100) 
+kmeans_result_6 <-  kmeans(key_measures_rep_sub_sample, centers = 6, nstart = 100, iter.max = 100) 
+kmeans_result_7 <-  kmeans(key_measures_rep_sub_sample, centers = 7, nstart = 100, iter.max = 100) 
+kmeans_result_8 <-  kmeans(key_measures_rep_sub_sample, centers = 8, nstart = 100, iter.max = 100) 
+kmeans_result_9 <-  kmeans(key_measures_rep_sub_sample, centers = 9, nstart = 100, iter.max = 100) 
+kmeans_result_10 <- kmeans(key_measures_rep_sub_sample, centers = 10, nstart = 100, iter.max = 100)
+kmeans_result_11 <- kmeans(key_measures_rep_sub_sample, centers = 11, nstart = 100, iter.max = 100)
+kmeans_result_12 <- kmeans(key_measures_rep_sub_sample, centers = 12, nstart = 100, iter.max = 100)
+```
+
+
 ### Identify the number of clusters to derive
+
+:::panel-tabset
+
+#### v1
 
 ```{r}
 #| echo: TRUE
 
 ## 1. **Determine the Optimal Number of Clusters**:
-fviz_nbclust(key_measures_scaled_head, kmeans, method = "wss")  # Elbow Method
+# fviz_nbclust(key_measures_scaled_head, kmeans, method = "wss")  # Elbow Method
+
+wssplot(key_measures_rep_sub_sample)
+
 ```
 
+#### v2
 
-###  Create K-means Clustering models:
 ```{r}
 #| echo: TRUE
-set.seed(123)  # For reproducibility
-kmeans_result_4 <-  kmeans(key_measures_scaled_head, centers = 4, nstart = 100, iter.max = 100) 
-kmeans_result_5 <-  kmeans(key_measures_scaled_head, centers = 5, nstart = 100, iter.max = 100) 
-kmeans_result_6 <-  kmeans(key_measures_scaled_head, centers = 6, nstart = 100, iter.max = 100) 
-kmeans_result_7 <-  kmeans(key_measures_scaled_head, centers = 7, nstart = 100, iter.max = 100) 
-kmeans_result_8 <-  kmeans(key_measures_scaled_head, centers = 8, nstart = 100, iter.max = 100) 
-kmeans_result_9 <-  kmeans(key_measures_scaled_head, centers = 9, nstart = 100, iter.max = 100) 
-kmeans_result_10 <- kmeans(key_measures_scaled_head, centers = 10, nstart = 100, iter.max = 100)
-kmeans_result_11 <- kmeans(key_measures_scaled_head, centers = 11, nstart = 100, iter.max = 100)
-kmeans_result_12 <- kmeans(key_measures_scaled_head, centers = 12, nstart = 100, iter.max = 100)
-```
-
-###  Assess Goodness-of-fit in K-means models:
-```{r}
-#| echo: TRUE
-
 
 # K-means goodness of fit
 ## The total within-cluster sum of squares (WSS) measures the compactness of the clusters. Lower values indicate better fit.
 ## The more clusters derived, the lower the sum of squares
 ## Trade of between fit and model simplicity?
-
-link_model_output <- function(model, model_id) {
-
-  model$tot.withinss |>
-    tibble() |>
-    rename(tot.withinss = 1) |>
-    mutate(id = model_id)
-}
 
 link_model_output(kmeans_result_4, "clusters_4") |>
   union_all(link_model_output(kmeans_result_5 , "clusters_5")) |>
@@ -139,14 +224,19 @@ link_model_output(kmeans_result_4, "clusters_4") |>
        )
 ```
 
+:::
+
+
+
+
 ###  Visualise K-means models:
 ```{r}
 #| echo: TRUE
 ## 3. **Visualize the Clusters**:
-fviz_cluster(kmeans_result_7,
-             data = key_measures_scaled_head,
+fviz_cluster(kmeans_result_6,
+             data = key_measures_rep_sub_sample,
              geom = "point",
-             ellipse.level = 99,
+             #ellipse.level = 99,
              ellipse.alpha = 0.1,
              pointsize = 0.5
              ) +
@@ -160,34 +250,32 @@ fviz_cluster(kmeans_result_7,
 ### Pairwise Scatter Plot Matrix
 ```{r}
 #| echo: TRUE
-
+#| eval: FALSE
 
 # Perform Principal Component Analysis (PCA)
-pca_result <- 
-  prcomp(key_measures_scaled_head, scale. = TRUE)
+pca_result <-
+  prcomp(key_measures_rep_sub_sample, scale. = TRUE)
 
 # Create a dataframe with the principal components
-pca_data <- 
+pca_data <-
   as.data.frame(pca_result$x) |>
-  mutate(cluster = as.factor(kmeans_result_7$cluster)) # Add cluster assignments to the dataframe
-
+  mutate(cluster = as.factor(kmeans_result_6$cluster)) # Add cluster assignments to the dataframe
 
 # Create pairwise scatter plot matrix
-ggpairs(pca_data, aes(color = cluster, alpha = 0.5))
+ggpairs_plot <- ggpairs(pca_data, aes(color = cluster, alpha = 0.5))
 
 ```
+
+```{r}
+#| echo: TRUE
+
+#ggpairs_plot
+```
+
 
 ### 3D plot of top 3 principle components
 ```{r}
 #| echo: TRUE
-
-
-# Create a dataframe with the first three principal components
-pca_data_3d <- 
-  pca_data[, 1:3] |>
-  mutate(cluster = as.factor(kmeans_result_7$cluster))
-  
-pca_data_3d$cluster <- as.factor(kmeans_result_7$cluster)
 
 # Create 3D plot
 plot_ly(pca_data_3d, x = ~PC1, y = ~PC2, z = ~PC3, color = ~cluster
@@ -201,32 +289,18 @@ plot_ly(pca_data_3d, x = ~PC1, y = ~PC2, z = ~PC3, color = ~cluster
 ```
 
 ### Plot classifications
+
 ```{r}
 #| echo: TRUE
-#| 
+#| eval: FALSE
+
 kmeans_classification_means <-
-  bind_cols(key_measures_scaled_head, classification = kmeans_result_7$cluster) |>
+  bind_cols(key_measures_rep_sub_sample, classification = kmeans_result_6$cluster) |>
   group_by(classification) |>
   summarise_all(funs(mean)) |>
-  mutate(classification = paste0("Profile ", 1:7)) |>
+  mutate(classification = paste0("Profile ", 1:6)) |>
   mutate_at(vars(-classification), function(x) round(x, 3)) |>
   rename(profile = classification)
-
-kmeans_classification_means_plot_fixed <-
-  kmeans_classification_means |>
-  pivot_longer(cols = -profile) |>
-  left_join(key_measure_lookup, by = c("name" = "variable")) |>
-  ggplot(aes(x = variable_clean, y = value, fill = variable_clean)) +
-  geom_col() +
-  facet_wrap(~profile) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
-        legend.position = "none",
-        strip.background = element_rect(fill = NA, colour = "grey")) +
-  labs(x = "Variable",
-       y = "Mean Zscore",
-       title = "Mean Zscore by variable and cluster/profile",
-       subtitle = "K-means cluster analysis - 7 clusters")
 
 kmeans_classification_means_plot_free <-
   kmeans_classification_means |>
@@ -242,9 +316,26 @@ kmeans_classification_means_plot_free <-
   labs(x = "Variable",
        y = "Mean Zscore",
        title = "Mean Zscore by variable and cluster/profile",
-       subtitle = "K-means cluster analysis - 7 clusters")
+       subtitle = "K-means cluster analysis - 6 clusters")
 
+
+kmeans_classification_means_plot_fixed <-
+  kmeans_classification_means |>
+  pivot_longer(cols = -profile) |>
+  left_join(key_measure_lookup, by = c("name" = "variable")) |>
+  ggplot(aes(x = variable_clean, y = value, fill = variable_clean)) +
+  geom_col() +
+  facet_wrap(~profile) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+        legend.position = "none",
+        strip.background = element_rect(fill = NA, colour = "grey")) +
+  labs(x = "Variable",
+       y = "Mean Zscore",
+       title = "Mean Zscore by variable and cluster/profile",
+       subtitle = "K-means cluster analysis - 6 clusters")
 ```
+
 
 ::: {.panel-tabset}
 
@@ -273,6 +364,7 @@ kmeans_classification_means_plot_free
 Function: 
 ```{r}
 #| echo: TRUE
+#| eval: FALSE
 
 explore_model_fit <- function(df,
                               n_profiles_range = 1:12,
@@ -303,13 +395,7 @@ explore_model_fit <- function(df,
   y
 }
 
-fit_output <- explore_model_fit(key_measures_scaled_head, n_profiles_range = 1:12)
-
-```
-
-### Elbow plot to test n_clusters
-```{r}
-#| echo: TRUE
+fit_output <- explore_model_fit(key_measures_rep_sub_sample, n_profiles_range = 1:12)
 
 # Elbow plot
 to_plot <-
@@ -318,6 +404,11 @@ to_plot <-
   mutate(`Covariance matrix structure` = as.factor(`Covariance matrix structure`),
          val = abs(val)) # this is to make the BIC values positive (to align with more common formula / interpretation of BIC)
 
+```
+
+### Elbow plot to test n_clusters
+```{r}
+#| echo: TRUE
 
 to_plot |>
   tibble() |>
@@ -343,14 +434,22 @@ to_plot |>
 ### Select model
 ```{r}
 #| echo: TRUE
+#| eval: FALSE
 
 selected_model_eev_6 <- Mclust(key_measures_scaled_head, G = 6, modelNames = "EEV")
+
+```
+
+```{r}
+#| echo: TRUE
+
 print(summary(selected_model_eev_6))
 ```
 
 ### Plot model classifications
 ```{r}
 #| echo: TRUE
+#| eval: FALSE
 
 # Plot model classifications
 dff <- bind_cols(key_measures_scaled_head, classification = selected_model_eev_6$classification)
@@ -421,3 +520,112 @@ lpa_profiles_mean_free
 ```
 
 :::
+
+## Step 3: Performing Density-Based Clustering
+
+### Optimal value of “eps” parameter
+
+```{r}
+#| echo: TRUE
+
+dbscan::kNNdistplot(key_measures_rep_sub_sample, k =  5)
+abline(h = 1.8, lty = 2)
+```
+
+### Plot DBSCAN results
+
+```{r}
+#| echo: TRUE
+
+# Print DBSCAN
+#print(db)
+
+# Plot clusters
+dbscan_plot_fviz
+```
+
+
+## Step 4: Evaluate Clustering Models
+
+```{r}
+#| echo: TRUE
+#| eval: FALSE
+
+# Isolate cluster vectors from each model
+kmeans_clusters <- kmeans_result_6$cluster
+lpa_clusters    <- selected_model_eev_6$classification
+dbscan_clusters <- db$cluster
+
+# Function to sub-sample data
+subsample_data <- function(data, fraction = 0.25) {
+  set.seed(123) # For reproducibility
+  sample_indices <- sample(1:nrow(data), size = floor(fraction * nrow(data)))
+  return(data[sample_indices, ])
+}
+
+# Evaluate clustering performance on a sub-sample
+evaluate_clustering_subsample <- function(data, clusters, fraction = 0.25) {
+  # Sub-sample the data
+  subsample <- subsample_data(data, fraction)
+  subsample_clusters <- clusters[1:nrow(subsample)]
+
+  # Ensure clusters are numeric
+  subsample_clusters <- as.numeric(subsample_clusters)
+
+  # Calculate silhouette score
+  dist_matrix <- dist(subsample)
+  sil <- silhouette(subsample_clusters, dist_matrix)
+  silhouette_score <- mean(sil[, 3])
+
+  # Calculate Davies-Bouldin index
+  db_index <- index.DB(subsample, subsample_clusters)$DB
+
+  # Calculate within-cluster sum of squares (WCSS)
+  wcss <- sum(kmeans(subsample, centers = length(unique(subsample_clusters)))$withinss)
+
+  return(list(silhouette_score = silhouette_score, db_index = db_index, wcss = wcss))
+}
+
+# Calculate evaluation metrics for each model using a subsample
+kmeans_eval <- evaluate_clustering_subsample(key_measures_rep_sub_sample, kmeans_clusters)
+lpa_eval    <- evaluate_clustering_subsample(key_measures_rep_sub_sample, lpa_clusters)
+dbscan_eval <- evaluate_clustering_subsample(key_measures_rep_sub_sample, dbscan_clusters)
+
+# Function to identify the optimum model
+select_optimum_model <- function(kmeans_eval, lpa_eval, dbscan_eval) {
+  # Combine evaluation metrics into a data frame
+  eval_metrics <- data.frame(
+    model = c("K-means", "LPA", "DBSCAN"),
+    silhouette_score = c(kmeans_eval$silhouette_score, lpa_eval$silhouette_score, dbscan_eval$silhouette_score),
+    db_index = c(kmeans_eval$db_index, lpa_eval$db_index, dbscan_eval$db_index),
+    wcss = c(kmeans_eval$wcss, lpa_eval$wcss, dbscan_eval$wcss)
+  )
+
+  # Normalize the metrics for comparison (higher silhouette score is better, lower DB index and WCSS are better)
+  eval_metrics$normalized_silhouette <- eval_metrics$silhouette_score / max(eval_metrics$silhouette_score)
+  eval_metrics$normalized_db_index <- min(eval_metrics$db_index) / eval_metrics$db_index
+  eval_metrics$normalized_wcss <- min(eval_metrics$wcss) / eval_metrics$wcss
+
+  # Calculate a combined score (you can adjust the weights as needed)
+  eval_metrics$combined_score <- eval_metrics$normalized_silhouette + eval_metrics$normalized_db_index + eval_metrics$normalized_wcss
+
+  # Identify the model with the highest combined score
+  optimum_model <- eval_metrics[which.max(eval_metrics$combined_score), "model"]
+
+  return(optimum_model)
+}
+
+```
+
+```{r}
+#| echo: TRUE
+
+# Identify the optimum model
+optimum_model <- select_optimum_model(kmeans_eval, lpa_eval, dbscan_eval)
+print(paste("The optimum model is:", optimum_model))
+
+```
+
+
+
+

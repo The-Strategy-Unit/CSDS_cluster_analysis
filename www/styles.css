@@ -1,0 +1,9 @@
+/* styles.css */
+.quarto-title-block .quarto-title-banner {
+  background-image: url(images/tsu_logo_black.png);
+  background-size: 300px;
+  background-position: right;
+  background-repeat: no-repeat;
+  padding-right: 10px;
+  background-origin: content-box;
+}
